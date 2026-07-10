@@ -322,6 +322,82 @@ describe('LimitDetector', () => {
     });
   });
 
+  describe('in-place TUI repaints (the "hit your session limit" miss)', () => {
+    // The CLI renders its usage status in a strip that is REPAINTED IN PLACE
+    // with cursor/erase sequences, never newlines. Before repaints were treated
+    // as line breaks, the stale "used 71%" warning and the real limit banner
+    // fused into one pseudo-line, and the sub-100% figure vetoed the banner —
+    // the exact reported failure.
+    it('detects the banner repainted over a stale sub-100% warning', () => {
+      const d = new LimitDetector({ now });
+      expect(
+        d.push("\x1b[2K\x1b[GYou've used 71% of your session limit · resets 9:00 AM (UTC)"),
+      ).toBeNull();
+      const ev = d.push(
+        "\x1b[1A\x1b[2K\x1b[GYou've hit your session limit · resets 9:00 AM (UTC)\x1b[2K",
+      );
+      expect(ev).not.toBeNull();
+      expect(ev!.matchedText).toContain('hit your session limit');
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T09:00:00.000Z');
+    });
+
+    it('detects the banner after a lone-CR rewrite, via the idle-flush path', () => {
+      const d = new LimitDetector({ now });
+      d.push("You've used 95% of your session limit · resets 9:00 AM (UTC)");
+      // in-place rewrite: bare \r, new text, and nothing terminating the line
+      d.push("\rYou've hit your session limit · resets 9:00 AM (UTC)");
+      expect(d.hasPendingMatch()).toBe(true); // idle flush will arm
+      const ev = d.flush();
+      expect(ev).not.toBeNull();
+      expect(ev!.matchedText).toContain('hit your session limit');
+    });
+
+    it('a reached-limit phrase is real even with a stale sub-100% on the same line', () => {
+      const d = new LimitDetector({ now });
+      // worst case: the two renders fused into ONE line by an untranslated move
+      const ev = d.push(
+        "used 71% of your session limit You've hit your session limit · resets 9:00 AM (UTC)\n",
+      );
+      expect(ev).not.toBeNull();
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T09:00:00.000Z');
+    });
+
+    it('still ignores a pure warning even when phrased with "reached NN%"', () => {
+      const d = new LimitDetector({ now });
+      expect(
+        d.push("You've reached 90% of your usage limit · resets 9:00 AM (UTC)\n"),
+      ).toBeNull();
+    });
+  });
+
+  describe('model/plan-named limits (Opus, Sonnet, Fable 5, spend)', () => {
+    it("detects \"You've hit your Opus limit\"", () => {
+      const d = new LimitDetector({ now });
+      const ev = d.push("You've hit your Opus limit · resets 9:00 AM (UTC)\n");
+      expect(ev).not.toBeNull();
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T09:00:00.000Z');
+    });
+
+    it("detects \"You've hit your Fable 5 limit\" with no reset time", () => {
+      const d = new LimitDetector({ now });
+      const ev = d.push("You've hit your Fable 5 limit\n");
+      expect(ev).not.toBeNull();
+      expect(ev!.resetTime).toBeNull();
+    });
+
+    it("detects \"You've hit your monthly spend limit.\"", () => {
+      const d = new LimitDetector({ now });
+      expect(d.push("You've hit your monthly spend limit. /model to switch models.\n")).not.toBeNull();
+    });
+
+    it("detects \"You've reached your org's monthly usage limit\"", () => {
+      const d = new LimitDetector({ now });
+      expect(
+        d.push("You've reached your org's monthly usage limit · resets 9:00 AM (UTC)\n"),
+      ).not.toBeNull();
+    });
+  });
+
   describe('"limit" + "reset" co-occurrence (encoding-robust catch-all)', () => {
     // The first three phrasings are chosen so NONE of the more specific patterns
     // above match (no "usage/weekly/session limit", no "reached/hit … limit", no

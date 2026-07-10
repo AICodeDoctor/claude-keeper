@@ -26,8 +26,14 @@
  *   FAKE_CLAUDE_FAIL_RESUMES=N (with FAKE_CLAUDE_STATE=<file>) when launched with
  *                              --continue, the first N such launches print the
  *                              limit and exit — exercises relaunch retries
+ *   FAKE_CLAUDE_MENU=1         at the limit, render the real CLI's rate-limit
+ *                              options menu instead of a plain banner and wait
+ *                              for an answer. The pointer starts on the PAID
+ *                              option, so a blind Enter "buys" extra usage
+ *                              (prints EXTRA USAGE PURCHASED and exits 9 — a
+ *                              loud test failure); pressing "2" chooses
+ *                              "Stop and wait for limit to reset"
  */
-import readline from 'node:readline';
 import fs from 'node:fs';
 
 const args = process.argv.slice(2);
@@ -36,17 +42,54 @@ const reset = process.env.FAKE_CLAUDE_RESET || '3:00 PM (America/New_York)';
 const limitExits = process.env.FAKE_CLAUDE_LIMIT_EXITS === '1';
 
 let limited = false;
+let menuOpen = false;
 let stillLimitedReplies = parseInt(process.env.FAKE_CLAUDE_STILL_LIMITED || '0', 10) || 0;
+const withMenu = process.env.FAKE_CLAUDE_MENU === '1';
 
 function out(line) {
   process.stdout.write(line + '\r\n');
 }
 
 function emitLimit() {
+  if (withMenu) {
+    // Mirrors the real CLI's rate-limit options dialog: the safe choice is NOT
+    // where the pointer starts, and its position/number varies in real builds.
+    out(`You've hit your session limit · resets ${reset}`);
+    out('');
+    out('What do you want to do?');
+    out('❯ 1. Add funds to continue with usage credits');
+    out('  2. Stop and wait for limit to reset');
+    menuOpen = true;
+    limited = true;
+    return;
+  }
   out(`Claude usage limit reached. Your limit will reset at ${reset}.`);
   // distinct exit code from a clean /quit, so callers can tell them apart
   if (limitExits) process.exit(7);
   limited = true;
+}
+
+/**
+ * Handle one raw keystroke while the options menu is open — like the real
+ * TUI's menu, which reads raw keys (a digit acts immediately, no Enter needed).
+ */
+function handleMenuKey(ch) {
+  if (ch === '2') {
+    menuOpen = false;
+    // The real TUI erases the menu and repaints; the blank line models the
+    // frame separation those erase sequences become.
+    out('');
+    out('Stopped — waiting for the limit to reset.');
+    return;
+  }
+  if (ch === '\r' || ch === '\n') {
+    // Enter with the pointer still on the paid option: the catastrophe the
+    // answerer exists to prevent. Fail loudly so tests catch it.
+    menuOpen = false;
+    out('EXTRA USAGE PURCHASED');
+    process.exit(9);
+  }
+  // any other keystroke is ignored by the menu
 }
 
 /**
@@ -91,11 +134,8 @@ if (process.env.FAKE_CLAUDE_AUTOLIMIT === '1') {
   emitLimit();
 }
 
-const rl = readline.createInterface({ input: process.stdin });
-rl.on('line', (raw) => {
-  const line = raw.replace(/[\r\n]+$/, '').trim();
+function onLine(line) {
   if (line === '/quit') {
-    rl.close();
     process.exit(0);
     return;
   }
@@ -113,5 +153,27 @@ rl.on('line', (raw) => {
   }
   if (line === '/triggerlimit') return emitLimit();
   if (line.length > 0) out('● ' + line);
+}
+
+// Raw, key-level input handling (readline can't model the menu: the real TUI
+// reads raw keys, so a digit selects immediately without Enter). Raw mode is
+// required under a PTY — canonical mode would buffer keystrokes until Enter.
+let inputBuf = '';
+if (process.stdin.isTTY) process.stdin.setRawMode(true);
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', (chunk) => {
+  for (const ch of chunk) {
+    if (menuOpen) {
+      handleMenuKey(ch);
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') {
+      const line = inputBuf.trim();
+      inputBuf = '';
+      onLine(line);
+    } else {
+      inputBuf += ch;
+    }
+  }
 });
-rl.on('close', () => process.exit(0));
+process.stdin.on('end', () => process.exit(0));

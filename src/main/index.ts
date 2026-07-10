@@ -194,6 +194,10 @@ function wireSession(win: BrowserWindow): void {
       // Persist/clear the recoverable wait as the session crosses WAITING.
       if (ev.type === 'limit') {
         lastResetMs = ev.resetTime ? ev.resetTime.getTime() : null;
+        // A reset time can be learned AFTER the wait began (registered off the
+        // options menu first, exact time from a later banner): re-persist so a
+        // restart recovers the precise schedule instead of a null time.
+        if (c.state === 'WAITING') persistWait();
       } else if (ev.type === 'state') {
         if (ev.state === 'WAITING') {
           if (suppressNextWaitPersist) suppressNextWaitPersist = false;

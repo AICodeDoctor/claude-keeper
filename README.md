@@ -44,19 +44,26 @@ or touch the Anthropic API; it only waits for the legitimate reset.
    of "reached" (`You've hit your session limit · resets <time> (<tz>)`). As an
    encoding-robust backstop — Claude varies spacing and apostrophe glyphs between
    builds — it also matches any line where the words **"limit"** and **"reset"**
-   co-occur within the same sentence or two consecutive sentences.
+   co-occur within the same sentence or two consecutive sentences. In-place
+   TUI repaints (cursor moves/erases instead of newlines) are treated as line
+   breaks, so a banner painted over an old "used 71%" status can't be missed.
    Detection patterns are configurable and apply live to a running session.
-3. Parses the reset time (timezone-aware), falling back to interval polling.
-4. Enters a **waiting stage**: the Claude session is left open exactly as it
+3. When the CLI pauses on its **rate-limit options menu** ("What do you want to
+   do?" with paid options like extra usage next to *Stop and wait for limit to
+   reset*), Claude Keeper **answers it automatically with "Stop and wait for
+   limit to reset"** — never a blind Enter, since the pointer may start on a
+   paid option. The session then parks safely for the scheduled resume.
+4. Parses the reset time (timezone-aware), falling back to interval polling.
+5. Enters a **waiting stage**: the Claude session is left open exactly as it
    was, with a live status bar + countdown, until the reset time **plus a
    safety buffer** (default 60 s, configurable).
-5. **Auto-resumes** when the timer runs out by typing the resume prompt
+6. **Auto-resumes** when the timer runs out by typing the resume prompt
    (default `continue`, configurable) plus Enter into the live session. If the
    CLI died in the meantime (or the app was restarted mid-wait), it relaunches
    `claude --continue` first and then types the prompt.
-6. Verifies the resume took (retries with backoff if the limit message comes
+7. Verifies the resume took (retries with backoff if the limit message comes
    back), and **Resume now** skips the countdown whenever you want.
-7. Survives **app restart and laptop sleep** mid-wait (state persisted to disk).
+8. Survives **app restart and laptop sleep** mid-wait (state persisted to disk).
 
 It does **not** bypass limits or touch the Anthropic API — it only observes
 terminal output and waits for the legitimate reset.

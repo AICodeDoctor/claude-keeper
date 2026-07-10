@@ -1,5 +1,5 @@
-import stripAnsi from 'strip-ansi';
 import { parseResetTime, type ParsedReset } from './reset-time-parser';
+import { TuiStreamNormalizer } from './tui-text';
 
 export interface LimitEvent {
   /** The full output line that matched a limit pattern (ANSI-stripped). */
@@ -32,6 +32,11 @@ export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
   // "You've hit your usage limit", "you have hit your weekly usage limit",
   // "You've hit your session limit" — the current phrasing that broke detection.
   /hit (?:[\w-]+\s+){0,3}(?:usage|session|weekly|daily|hourly|monthly) limit/i,
+  // "You've hit your Opus limit", "…Sonnet limit", "…Fable 5 limit", "…fast
+  // limit", "…monthly spend limit", "…org's monthly usage limit" — the limit
+  // noun is a model/plan name the alternation above doesn't know. Any short
+  // "hit/reached your|the <words> limit" phrase is a reached limit.
+  /\b(?:hit|reached)\s+(?:your|the)\s+(?:[\w'&-]+\s+){0,4}?limit\b/i,
   // "Weekly limit reached", "5-hour limit reached", "Daily/Hourly/Monthly/Session
   // limit reached" — the bare phrasing that omits the word "usage".
   /\b(?:weekly|daily|hourly|monthly|session|\d+\s*-?\s*hour)\s+limit reached/i,
@@ -61,35 +66,16 @@ export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
 const HARD_BUFFER_MULTIPLIER = 8;
 
 /**
- * A trailing, *incomplete* ANSI escape at the very end of the accumulated raw
- * stream: a lone ESC, an unfinished CSI (`ESC [` + params/intermediates but no
- * final byte), or an unfinished OSC (`ESC ]` + body but no BEL/ST terminator).
- * PTY reads split at arbitrary byte boundaries, so a styled limit banner can be
- * delivered with its escape sequence cut in half. Stripping ANSI *per chunk*
- * then leaves the escape residue embedded in the text — e.g. "session <ESC>["
- * + "0mlimit" — which fractures "session limit" and defeats every pattern (and,
- * because push() never matches, hasPendingMatch() never arms the idle flush, so
- * the safety net misses it too). We hold this fragment back and prepend it to the
- * next chunk so the escape reassembles and strips cleanly.
+ * A phrase that says the limit HAS been hit ("hit/reached your … limit",
+ * "limit reached"). A line carrying one is a real limit no matter what
+ * percentage figures sit nearby: when the TUI repaints its status strip in
+ * place, a stale "used 71%" from a previous render can share a pseudo-line
+ * with the genuine banner, and the percentage must not veto it. The verb must
+ * be followed by "your|the" (with no % before "limit") so warning phrasings
+ * like "reached 90% of your limit" don't count as reached.
  */
-// eslint-disable-next-line no-control-regex
-const INCOMPLETE_ESC_RE = /\x1b(?:\[[0-9;?<>=]*[ -/]*|\][^\x07\x1b]*)?$/;
-
-/** Never hold more than this as a pending escape, so a lone ESC in plain output
- * (or a pathological unterminated OSC) can't stall the buffer indefinitely. */
-const MAX_HELD_ESC = 128;
-
-/**
- * Index at which a trailing incomplete ANSI escape begins, or `s.length` when
- * there is none to hold back. An implausibly long trailing "escape" is treated
- * as ordinary text (returns `s.length`) rather than held forever.
- */
-function incompleteEscapeStart(s: string): number {
-  const m = s.match(INCOMPLETE_ESC_RE);
-  if (!m || m.index === undefined) return s.length;
-  if (s.length - m.index > MAX_HELD_ESC) return s.length;
-  return m.index;
-}
+const REACHED_LIMIT_RE =
+  /\b(?:hit|reached)\s+(?:your|the)\s[^%\n]{0,60}?\blimit\b|\blimit reached\b/i;
 
 /**
  * A matched line that carries a percentage *below* 100% is a pre-limit usage
@@ -101,6 +87,7 @@ function incompleteEscapeStart(s: string): number {
  * Returns true when the line should NOT trigger the wait/resume flow.
  */
 function isPreLimitUsageWarning(line: string): boolean {
+  if (REACHED_LIMIT_RE.test(line)) return false; // explicitly reached: never a warning
   const re = /(\d{1,3}(?:\.\d+)?)\s*%/g;
   let sawPercent = false;
   let m: RegExpExecArray | null;
@@ -121,9 +108,9 @@ function isPreLimitUsageWarning(line: string): boolean {
  */
 export class LimitDetector {
   private buf = '';
-  /** A trailing incomplete ANSI escape held back from the last push (see
-   * {@link INCOMPLETE_ESC_RE}); prepended to the next chunk before stripping. */
-  private pendingEsc = '';
+  /** ANSI-aware normalizer: reassembles split escapes and converts in-place
+   * TUI repaints (cursor moves, erases, lone CR) into line breaks. */
+  private readonly norm = new TuiStreamNormalizer();
   private patterns: RegExp[];
   private readonly now: () => number;
   private readonly maxBuffer: number;
@@ -154,13 +141,7 @@ export class LimitDetector {
 
   /** Feed a chunk of (possibly ANSI-laden, possibly partial) output. */
   push(chunk: string): LimitEvent | null {
-    // Reunite any escape fragment held from the previous chunk with this one, so
-    // an ANSI sequence split across a PTY read boundary strips as a whole instead
-    // of leaving residue that fractures the text (see {@link INCOMPLETE_ESC_RE}).
-    const raw = this.pendingEsc + chunk;
-    const holdAt = incompleteEscapeStart(raw);
-    this.pendingEsc = raw.slice(holdAt);
-    this.buf += stripAnsi(raw.slice(0, holdAt));
+    this.buf += this.norm.push(chunk);
     const ev = this.scan(false);
     if (!ev) this.trim();
     return ev;
@@ -168,12 +149,9 @@ export class LimitDetector {
 
   /** Force-emit a pending (unterminated) limit line, e.g. on process exit. */
   flush(): LimitEvent | null {
-    // No more chunks are coming: fold any held escape fragment into the buffer
-    // (stripping what we can) so a match sitting just before it isn't withheld.
-    if (this.pendingEsc) {
-      this.buf += stripAnsi(this.pendingEsc);
-      this.pendingEsc = '';
-    }
+    // No more chunks are coming: fold any held-back fragment into the buffer
+    // so a match sitting just before it isn't withheld.
+    this.buf += this.norm.flush();
     return this.scan(true);
   }
 
@@ -207,7 +185,7 @@ export class LimitDetector {
 
   reset(): void {
     this.buf = '';
-    this.pendingEsc = '';
+    this.norm.reset();
   }
 
   /** Index of the earliest pattern match at or after `from`, or -1 if none. */

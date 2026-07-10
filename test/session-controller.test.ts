@@ -204,6 +204,38 @@ describe('SessionController integration (fake-claude over a real PTY)', () => {
     expect(c.state).toBe('RUNNING');
   });
 
+  it('answers the rate-limit options menu with "Stop and wait", then resumes on schedule', async () => {
+    const c = newController({
+      scheduler: new FastScheduler(400),
+      menuStepMs: 40,
+      env: {
+        ...(process.env as Record<string, string>),
+        FAKE_CLAUDE_MENU: '1', // the limit pauses on the real CLI's options menu
+      },
+    });
+    const rec = record(c);
+
+    c.start();
+    await rec.waitFor((e) => e.type === 'data' && e.data.includes('ready'));
+    c.write('/triggerlimit\r');
+    await rec.waitFor((e) => e.type === 'limit');
+
+    // The menu is answered with the SAFE option (the pointer starts on the paid
+    // one, so a blind Enter would exit 9 with "EXTRA USAGE PURCHASED")…
+    await rec.waitFor((e) => e.type === 'data' && e.data.includes('Stopped — waiting'));
+    expect(
+      rec.events.some(
+        (e) => e.type === 'notice' && /Stop and wait for limit to reset/.test(e.message),
+      ),
+    ).toBe(true);
+
+    // …and the scheduled resume then types the prompt into the same session.
+    await rec.waitFor((e) => e.type === 'resumed');
+    expect(rec.text()).toContain('● continue');
+    expect(rec.text()).not.toContain('EXTRA USAGE PURCHASED');
+    expect(c.state).toBe('RUNNING');
+  });
+
   it('relaunches with --continue and types the prompt when the CLI exits at the limit', async () => {
     const c = newController({
       scheduler: new FastScheduler(15),

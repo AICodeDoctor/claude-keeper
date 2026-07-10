@@ -1,5 +1,7 @@
 import { PtyHost, type PtyStartOptions } from '../main/pty-host';
 import { LimitDetector, type LimitDetectorOptions, type LimitEvent } from './limit-detector';
+import { LimitMenuAnswerer } from './limit-menu-answerer';
+import { parseResetTime } from './reset-time-parser';
 import { createLogger } from './logger';
 import { ResumeScheduler, type SchedulerEvent } from './resume-scheduler';
 import { DEFAULT_RESUME_PROMPT, sanitizeResumePrompt } from './settings';
@@ -97,6 +99,21 @@ export interface SessionControllerOptions {
    */
   limitIdleFlushMs?: number;
   /**
+   * When the CLI pauses on its rate-limit options menu ("What do you want to
+   * do?" with paid options next to "Stop and wait for limit to reset"),
+   * automatically choose "Stop and wait for limit to reset" so the session
+   * parks safely for the scheduled resume instead of sitting on a menu whose
+   * default may be a PAID option (and which a later resume Enter would
+   * activate). Acts even when {@link autoResume} is paused — stopping is the
+   * safe choice either way. Default true.
+   */
+  answerLimitMenu?: boolean;
+  /**
+   * Debounce between menu-answering steps (each step sends at most one
+   * keystroke group, then waits for the menu to re-render). Default 600ms.
+   */
+  menuStepMs?: number;
+  /**
    * Launch with the directory-trust prompt bypassed. When true, {@link trustFlags}
    * are appended to every fresh launch AND every resume relaunch. Off by default.
    */
@@ -141,6 +158,8 @@ export class SessionController {
       | 'autoResume'
       | 'verifyWindowMs'
       | 'limitIdleFlushMs'
+      | 'answerLimitMenu'
+      | 'menuStepMs'
       | 'trustWorkingDir'
       | 'trustFlags'
     >
@@ -162,6 +181,15 @@ export class SessionController {
    * but withholds the event; force-flushes once output goes idle.
    */
   private limitFlushTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Watches for the CLI's rate-limit options menu and answers it safely. */
+  private readonly menu = new LimitMenuAnswerer();
+  /** Debounce between menu-answering steps. */
+  private menuTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The "choosing Stop and wait" notice is emitted once per menu appearance. */
+  private menuNoticeSent = false;
+  /** Whether any output arrived since the last menu step (a silent menu after a
+   * keystroke suggests the keystroke was lost, permitting one re-send). */
+  private menuDataSince = false;
   private verifying = false;
   private disposed = false;
   private unsubScheduler: (() => void) | undefined;
@@ -182,6 +210,8 @@ export class SessionController {
       autoResume: true,
       verifyWindowMs: 4_000,
       limitIdleFlushMs: 800,
+      answerLimitMenu: true,
+      menuStepMs: 600,
       trustWorkingDir: false,
       trustFlags: ['--dangerously-skip-permissions'],
       ...provided,
@@ -217,6 +247,8 @@ export class SessionController {
       throw new Error(`start() requires IDLE state (was ${this._state})`);
     }
     this.detector.reset();
+    this.menu.reset();
+    this.menuNoticeSent = false;
     const args = this.opts.args ?? [];
     log.info('start()', {
       command: this.opts.command,
@@ -371,6 +403,7 @@ export class SessionController {
 
   private teardownPty(): void {
     this.clearLimitFlushTimer();
+    this.clearMenuTimer();
     for (const u of this.ptyUnsubs) u();
     this.ptyUnsubs = [];
     if (this.pty?.running) {
@@ -406,6 +439,20 @@ export class SessionController {
     if (this._state === 'RUNNING') {
       this.recentOutput = (this.recentOutput + data).slice(-8_192);
     }
+    // Watch for the CLI's rate-limit options menu in every active state: it can
+    // appear while RUNNING (limit just hit) but also linger into WAITING, where
+    // it MUST be answered before the resume prompt's Enter could activate
+    // whatever option is selected.
+    this.menu.push(data);
+    this.menuDataSince = true;
+    if (
+      this.opts.answerLimitMenu &&
+      this._state !== 'IDLE' &&
+      this.menuTimer === undefined &&
+      this.menu.visible()
+    ) {
+      this.menuTimer = setTimeout(() => this.onMenuStep(), this.opts.menuStepMs);
+    }
     const ev = this.detector.push(data);
     if (ev) {
       this.clearLimitFlushTimer();
@@ -438,6 +485,52 @@ export class SessionController {
     if (ev) {
       log.info('idle-flush detected limit in live session', { matchedText: ev.matchedText });
       this.handleLimit(ev);
+    }
+  }
+
+  /**
+   * One debounced step of answering the rate-limit options menu. Each step
+   * issues at most one keystroke group (Enter / digit / arrows), then waits for
+   * the menu to re-render before the next, so selection can be *observed*
+   * landing on "Stop and wait for limit to reset" rather than assumed. Also
+   * registers the limit itself if the banner slipped past the detector — the
+   * menu existing at all means the limit was hit.
+   */
+  private onMenuStep(): void {
+    this.menuTimer = undefined;
+    if (this.disposed || this._state === 'IDLE') return;
+    if (!this.menu.visible()) {
+      this.menu.resetCycle();
+      this.menuNoticeSent = false;
+      return;
+    }
+
+    if (this._state === 'RUNNING') {
+      const line =
+        this.menu.bannerLine() ?? 'Limit options menu detected (Stop and wait for limit to reset)';
+      const reset = parseResetTime(line);
+      log.info('limit menu visible while RUNNING — registering limit', { line });
+      this.handleLimit({ matchedText: line, resetTime: reset?.date ?? null, reset });
+      if (this.liveState() === 'IDLE') return; // a listener stopped us
+    }
+
+    const allowRepeat = !this.menuDataSince;
+    this.menuDataSince = false;
+    const action = this.menu.step(allowRepeat);
+    if (action && this.pty?.running) {
+      if (!this.menuNoticeSent) {
+        this.menuNoticeSent = true;
+        this.emit({
+          type: 'notice',
+          message:
+            'The CLI is asking what to do about the limit — choosing "Stop and wait for limit to reset".',
+        });
+      }
+      log.info('answering limit menu', { kind: action.kind, detail: action.detail });
+      this.pty.write(action.keys);
+      // Step again after the menu has had a chance to re-render. Once no more
+      // action is needed the chain ends; new output re-arms it via onData.
+      this.menuTimer = setTimeout(() => this.onMenuStep(), this.opts.menuStepMs);
     }
   }
 
@@ -533,6 +626,18 @@ export class SessionController {
       this.handleResumeFailure(ev.matchedText);
       return;
     }
+
+    // Already WAITING without a known reset time (e.g. the limit was first
+    // registered off the options menu): a later line that DOES carry the reset
+    // time upgrades the wait from interval polling to an exact schedule.
+    if (this._state === 'WAITING' && this.lastResetTime === null && ev.resetTime) {
+      this.lastResetTime = ev.resetTime;
+      log.info('reset time learned while waiting', { matchedText: ev.matchedText });
+      this.emit({ type: 'limit', resetTime: ev.resetTime, matchedText: ev.matchedText });
+      if (this.liveState() !== 'WAITING') return;
+      if (this.opts.autoResume) this.scheduler.start(ev.resetTime);
+      return;
+    }
     // Any other state: ignore (e.g. duplicate match while already WAITING).
   }
 
@@ -569,6 +674,29 @@ export class SessionController {
 
     this.detector.reset();
     this.verifying = true;
+
+    // The options menu is still open and unanswered: typing the resume prompt
+    // now would end with an Enter that activates whatever option is selected —
+    // possibly a PAID one. Answer the menu first; this attempt is treated as a
+    // failed resume so the scheduler retries after its backoff.
+    if (
+      this.opts.answerLimitMenu &&
+      this.pty?.running &&
+      this.menu.visible() &&
+      this.menu.pendingAction()
+    ) {
+      log.info('resume deferred: limit options menu still open');
+      if (this.menuTimer === undefined) {
+        this.menuTimer = setTimeout(() => this.onMenuStep(), this.opts.menuStepMs);
+      }
+      this.handleResumeFailure('limit options menu still open');
+      return;
+    }
+    // Fresh menu watch for the resumed session: a re-limited resume can show
+    // the options menu again and must be answered again.
+    this.menu.reset();
+    this.menuNoticeSent = false;
+    this.clearMenuTimer();
 
     if (!this.pty?.running) {
       const args = this.withTrustFlags([...(this.opts.args ?? []), ...this.opts.continueArgs]);
@@ -626,6 +754,13 @@ export class SessionController {
     if (this.limitFlushTimer !== undefined) {
       clearTimeout(this.limitFlushTimer);
       this.limitFlushTimer = undefined;
+    }
+  }
+
+  private clearMenuTimer(): void {
+    if (this.menuTimer !== undefined) {
+      clearTimeout(this.menuTimer);
+      this.menuTimer = undefined;
     }
   }
 

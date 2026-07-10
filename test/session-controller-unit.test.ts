@@ -100,6 +100,7 @@ function harness(opts: {
   args?: string[];
   trustWorkingDir?: boolean;
   trustFlags?: string[];
+  answerLimitMenu?: boolean;
 }): Harness {
   const ptys: FakePty[] = [];
   const events: ControllerEvent[] = [];
@@ -112,6 +113,7 @@ function harness(opts: {
     args: opts.args,
     trustWorkingDir: opts.trustWorkingDir,
     trustFlags: opts.trustFlags,
+    answerLimitMenu: opts.answerLimitMenu,
     createPty: () => {
       const p = new FakePty();
       if (opts.failPtyFrom !== undefined && ptys.length >= opts.failPtyFrom) {
@@ -334,11 +336,10 @@ describe('SessionController unit (fake PTY)', () => {
       h.ptys[0].emitData('\x1b[2K\x1b[1G\x1b[38;5;208m╭─ Claude ');
       h.ptys[0].emitData('─────────╮\x1b[0m\r\n\x1b[38;5;208m│\x1b[0m ');
       h.ptys[0].emitData('You’ve reached your usage limit · resets 3:00 PM (America/New_York)');
-      h.ptys[0].emitData('\x1b[0m \x1b[2K\x1b[1G> '); // input prompt redrawn, no newline
-      // Still withheld — the matched notice never got a terminating newline.
-      expect(h.controller.state).toBe('RUNNING');
-
-      vi.advanceTimersByTime(800); // output goes idle -> force-flush while live
+      // The input-prompt redraw brings erase/column escapes, which now count as
+      // line breaks: the banner line is terminated and detected IMMEDIATELY —
+      // no idle-flush wait needed for this shape of render.
+      h.ptys[0].emitData('\x1b[0m \x1b[2K\x1b[1G> ');
       expect(h.controller.state).toBe('RESUMING'); // SyncScheduler fires the armed resume
       expect(h.events.some((e) => e.type === 'limit')).toBe(true);
     });
@@ -349,12 +350,14 @@ describe('SessionController unit (fake PTY)', () => {
       h.controller.start();
 
       h.ptys[0].emitData(LIMIT_NO_NEWLINE); // arms the one-shot idle flush
-      // Periodic repaints (e.g. a redrawn prompt) keep arriving but never add a
-      // newline; the armed timer must still fire rather than be starved.
+      // More output keeps arriving but nothing — no newline, no redraw escape —
+      // ever terminates the line; the armed timer must still fire rather than
+      // be starved. (Escape-bearing repaints would terminate the line and be
+      // detected immediately; see the previous test.)
       vi.advanceTimersByTime(300);
-      h.ptys[0].emitData('\x1b[2K\x1b[1G> ');
+      h.ptys[0].emitData(' ');
       vi.advanceTimersByTime(300);
-      h.ptys[0].emitData('\x1b[2K\x1b[1G> ');
+      h.ptys[0].emitData(' ');
       expect(h.controller.state).toBe('RUNNING');
       vi.advanceTimersByTime(200); // 800ms since first pending match
       expect(h.controller.state).toBe('WAITING');
@@ -473,6 +476,133 @@ describe('SessionController unit (fake PTY)', () => {
       h.ptys[0].emitExit({ exitCode: 0 });
       expect(h.events.some((e) => e.type === 'notice')).toBe(false);
       expect(h.controller.state).toBe('IDLE');
+    });
+  });
+
+  describe('rate-limit options menu auto-answer', () => {
+    const MENU_FRAME =
+      "You've hit your session limit · resets 3:00 PM (America/New_York)\r\n" +
+      '\r\n' +
+      'What do you want to do?\r\n' +
+      '❯ 1. Add funds to continue with usage credits\r\n' +
+      '  2. Stop and wait for limit to reset\r\n';
+
+    it('registers the limit and answers the menu with the safe digit', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(), autoResume: false }));
+      h.controller.start();
+      h.ptys[0].emitData(MENU_FRAME);
+      // The banner is a normal detection: the wait begins immediately.
+      expect(h.controller.state).toBe('WAITING');
+
+      vi.advanceTimersByTime(600); // menu-step debounce
+      expect(h.ptys[0].written).toEqual(['2']); // digit, never a blind Enter
+      expect(
+        h.events.some(
+          (e) => e.type === 'notice' && /stop and wait/i.test(e.message),
+        ),
+      ).toBe(true);
+    });
+
+    it('confirms with Enter after a re-render shows the pointer on the stop option', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(), autoResume: false }));
+      h.controller.start();
+      h.ptys[0].emitData(
+        'What do you want to do?\r\n' +
+          '❯ Add funds to continue with usage credits\r\n' +
+          '  Stop and wait for limit to reset\r\n',
+      );
+      vi.advanceTimersByTime(600);
+      expect(h.ptys[0].written).toEqual(['\x1b[B']); // one arrow down
+
+      // The CLI re-renders with the pointer moved (erase escapes separate frames).
+      h.ptys[0].emitData(
+        '\x1b[2K\x1b[1A\x1b[2K' +
+          'What do you want to do?\r\n' +
+          '  Add funds to continue with usage credits\r\n' +
+          '❯ Stop and wait for limit to reset\r\n',
+      );
+      vi.advanceTimersByTime(600);
+      expect(h.ptys[0].written).toEqual(['\x1b[B', '\r']);
+    });
+
+    it('does not re-answer an already-answered menu that lingers in the tail', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(), autoResume: false }));
+      h.controller.start();
+      h.ptys[0].emitData(MENU_FRAME);
+      vi.advanceTimersByTime(600);
+      expect(h.ptys[0].written).toEqual(['2']);
+
+      // The CLI acknowledges in a NEW frame; the old menu text is still in the
+      // tail but must not be acted on again.
+      h.ptys[0].emitData('\r\nStopped — waiting for the limit to reset.\r\n');
+      vi.advanceTimersByTime(5_000);
+      expect(h.ptys[0].written).toEqual(['2']);
+    });
+
+    it('defers the resume while the menu is still unanswered (no Enter into a paid option)', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(2), autoResume: false }));
+      h.controller.start();
+      h.ptys[0].emitData(MENU_FRAME);
+      expect(h.controller.state).toBe('WAITING');
+
+      // Resume fires before the menu-step debounce ever ran: the prompt (and
+      // its trailing Enter) must NOT be typed into the open menu.
+      h.controller.resumeNow();
+      expect(h.ptys[0].written.join('')).not.toContain('continue');
+      expect(h.ptys[0].written.join('')).not.toContain('\r');
+    });
+
+    it('registers the limit off the menu alone when no banner was printed', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(), autoResume: false }));
+      h.controller.start();
+      h.ptys[0].emitData(
+        'What do you want to do?\r\n' +
+          '❯ 1. Add funds to continue with usage credits\r\n' +
+          '  2. Stop and wait for limit to reset\r\n',
+      );
+      vi.advanceTimersByTime(600);
+      expect(h.controller.state).toBe('WAITING');
+      expect(h.ptys[0].written).toEqual(['2']);
+    });
+
+    it('upgrades a null reset time when a later line carries the real one', () => {
+      vi.useFakeTimers();
+      const h = track(harness({ scheduler: new SyncScheduler(), autoResume: false }));
+      h.controller.start();
+      // Menu only: the limit is registered without a reset time.
+      h.ptys[0].emitData(
+        'What do you want to do?\r\n' +
+          '❯ 1. Add funds to continue with usage credits\r\n' +
+          '  2. Stop and wait for limit to reset\r\n',
+      );
+      vi.advanceTimersByTime(600);
+      expect(h.controller.state).toBe('WAITING');
+
+      h.ptys[0].emitData(
+        "You've hit your session limit · resets 3:00 PM (America/New_York)\r\n",
+      );
+      const limits = h.events.filter((e) => e.type === 'limit') as Array<{
+        resetTime: Date | null;
+      }>;
+      expect(limits.length).toBe(2);
+      expect(limits[0]!.resetTime).toBeNull();
+      expect(limits[1]!.resetTime).toBeInstanceOf(Date);
+    });
+
+    it('can be disabled via answerLimitMenu', () => {
+      vi.useFakeTimers();
+      const h = track(
+        harness({ scheduler: new SyncScheduler(), autoResume: false, answerLimitMenu: false }),
+      );
+      h.controller.start();
+      h.ptys[0].emitData(MENU_FRAME);
+      vi.advanceTimersByTime(10_000);
+      expect(h.ptys[0].written).toEqual([]);
     });
   });
 });
