@@ -362,6 +362,25 @@ describe('LimitDetector', () => {
       expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T09:00:00.000Z');
     });
 
+    it('treats non-CSI row moves (reverse index, next line) as line breaks too', () => {
+      const d = new LimitDetector({ now });
+      d.push("You've used 71% of your session limit · resets 9:00 AM (UTC)");
+      // ESC M (reverse index) then rewrite — no CSI, no newline.
+      const ev = d.push("\x1bMYou've hit your session limit · resets 9:00 AM (UTC)\x1bE");
+      expect(ev).not.toBeNull();
+      expect(ev!.matchedText).toContain('hit your session limit');
+    });
+
+    it('treats an alternate-screen switch as a frame boundary', () => {
+      const d = new LimitDetector({ now });
+      d.push("You've used 71% of your session limit · resets 9:00 AM (UTC)");
+      const ev = d.push(
+        "\x1b[?1049hYou've hit your session limit · resets 9:00 AM (UTC)\x1b[?1049l",
+      );
+      expect(ev).not.toBeNull();
+      expect(ev!.matchedText).toContain('hit your session limit');
+    });
+
     it('still ignores a pure warning even when phrased with "reached NN%"', () => {
       const d = new LimitDetector({ now });
       expect(

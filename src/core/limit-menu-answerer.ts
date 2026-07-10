@@ -29,8 +29,10 @@ import { TuiStreamNormalizer } from './tui-text';
 
 export const STOP_AND_WAIT_RE = /stop and wait for limit to reset/i;
 
-/** The selection pointer the CLI renders in front of the active option. */
-const POINTER_RE = /^(?:❯|›|>)\s?/; // ❯, ›, or ASCII fallback >
+/** The selection pointer the CLI renders in front of the active option. The
+ * ASCII fallback ">" requires trailing whitespace so quoted/diff lines that
+ * merely start with ">" can't masquerade as the pointer. */
+const POINTER_RE = /^(?:❯|›)\s?|^>\s/;
 
 /** Leading box-drawing / whitespace to peel off before pointer inspection. */
 const LINE_PREFIX_RE = /^[\s|│┃]+/;

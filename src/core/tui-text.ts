@@ -28,12 +28,23 @@ import stripAnsi from 'strip-ansi';
 /**
  * Row-changing / erasing CSI sequences, each converted to a line break: cursor
  * up/down (A/B), next/previous line (E/F), column-absolute (G — the row is
- * being rewritten from the start), row-absolute (d), cursor position (H/f),
- * erase display (J), erase line (K), scroll (S/T), restore cursor (u). SGR
- * coloring (m) and everything else is simply stripped.
+ * being rewritten from the start), horizontal-absolute (`), row-absolute (d),
+ * row-relative (e), cursor position (H/f), erase display (J), erase line (K),
+ * insert/delete lines (L/M), erase characters (X — an in-place rewrite),
+ * scroll (S/T), restore cursor (u). SGR coloring (m) and everything else is
+ * simply stripped.
  */
 // eslint-disable-next-line no-control-regex
-const ROW_BREAK_CSI_RE = /\x1b\[[0-9;?]*[ABEFGHJKSTdfu]/g;
+const ROW_BREAK_CSI_RE = /\x1b\[[0-9;?]*[ABEFGHJKLMSTX`defu]/g;
+
+/**
+ * Non-CSI escapes that move the cursor to another row: IND (ESC D, index
+ * down), NEL (ESC E, next line), RI (ESC M, reverse index up), DECRC (ESC 8,
+ * restore cursor — the saved position is usually another row), RIS (ESC c,
+ * full reset). Also the alternate-screen switches (a whole-screen swap).
+ */
+// eslint-disable-next-line no-control-regex
+const ROW_BREAK_ESC_RE = /\x1b[DEM8c]|\x1b\[\?(?:47|1047|1049)[hl]/g;
 
 /**
  * A trailing, *incomplete* ANSI escape at the very end of the accumulated raw
@@ -59,10 +70,14 @@ function incompleteEscapeStart(s: string): number {
   return m.index;
 }
 
-/** Row-break escapes -> "\n", strip the rest, lone "\r" (in-place rewrite) -> "\n". */
+/** Row-break escapes -> "\n", strip the rest, lone "\r" (in-place rewrite) and
+ * vertical-tab / form-feed (both advance a row on a terminal) -> "\n". */
 function normalize(s: string): string {
   if (!s) return '';
-  return stripAnsi(s.replace(ROW_BREAK_CSI_RE, '\n')).replace(/\r(?!\n)/g, '\n');
+  return stripAnsi(s.replace(ROW_BREAK_CSI_RE, '\n').replace(ROW_BREAK_ESC_RE, '\n')).replace(
+    /\r(?!\n)|[\v\f]/g,
+    '\n',
+  );
 }
 
 export class TuiStreamNormalizer {

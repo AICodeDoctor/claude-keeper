@@ -623,7 +623,7 @@ export class SessionController {
     }
 
     if (this._state === 'RESUMING' && this.verifying) {
-      this.handleResumeFailure(ev.matchedText);
+      this.handleResumeFailure(ev.matchedText, ev.resetTime);
       return;
     }
 
@@ -724,7 +724,14 @@ export class SessionController {
     this.emit({ type: 'resumed' });
   }
 
-  private handleResumeFailure(_reason: string): void {
+  /** A fresh reset time announced on a failed resume must be at least this far
+   * in the future to re-arm the schedule. Near/just-passed times (the "safety
+   * buffer was a minute short" case) stay on cheap backoff retries — only a
+   * clearly-later window (daily/weekly caps), where backoff would exhaust into
+   * ERROR long before the true reset, is worth rescheduling for. */
+  private static readonly REARM_MIN_FUTURE_MS = 5 * 60_000;
+
+  private handleResumeFailure(reason: string, freshResetTime?: Date | null): void {
     if (!this.verifying) return;
     this.verifying = false;
     this.clearVerifyTimer();
@@ -736,6 +743,28 @@ export class SessionController {
     // an 'exhausted' event lands while we are in WAITING (WAITING -> ERROR).
     if (this._state === 'RESUMING') this.setState('WAITING');
     if (this.liveState() !== 'WAITING') return; // a listener changed our state
+
+    // The still-limited reply usually announces WHEN the limit lifts. If that
+    // time is genuinely in the future, waiting for it beats blind backoff —
+    // backoff burns maxRetries within ~an hour, which turns a merely-early
+    // resume (e.g. a weekly cap) into a hard ERROR. Re-arming resets the retry
+    // budget; that is intended: as long as the CLI keeps naming a concrete
+    // future reset, keeping the wait alive is correct, not a failure loop.
+    if (
+      this.opts.autoResume &&
+      freshResetTime &&
+      freshResetTime.getTime() > Date.now() + SessionController.REARM_MIN_FUTURE_MS
+    ) {
+      this.lastResetTime = freshResetTime;
+      log.info('resume failed but a fresh reset time was announced — rescheduling', {
+        reason,
+        resetTime: freshResetTime.toISOString(),
+      });
+      this.emit({ type: 'limit', resetTime: freshResetTime, matchedText: reason });
+      if (this.liveState() !== 'WAITING') return;
+      this.scheduler.start(freshResetTime);
+      return;
+    }
     this.scheduler.retry();
   }
 

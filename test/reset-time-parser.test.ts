@@ -128,4 +128,58 @@ describe('parseResetTime', () => {
     // UTC-3 year round -> 09:00 ART == 12:00Z
     expect(r?.date.toISOString()).toBe('2026-01-15T12:00:00.000Z');
   });
+
+  describe('compact durations ("resets in 2h 13m" — the fast-limit banner)', () => {
+    it('parses "resets in 2h 13m"', () => {
+      const r = parseResetTime("You've hit your fast limit · resets in 2h 13m", JAN);
+      expect(r?.kind).toBe('relative');
+      expect(r?.date.toISOString()).toBe('2026-01-15T14:13:00.000Z');
+    });
+
+    it('parses "resets in 45m"', () => {
+      const r = parseResetTime('resets in 45m', JAN);
+      expect(r?.date.toISOString()).toBe('2026-01-15T12:45:00.000Z');
+    });
+
+    it('parses "resets in 3d 2h"', () => {
+      const r = parseResetTime('Weekly limit · resets in 3d 2h', JAN);
+      expect(r?.date.toISOString()).toBe('2026-01-18T14:00:00.000Z');
+    });
+  });
+
+  describe('explicit dates ("resets Jul 15, 3pm" — resets more than 24h away)', () => {
+    it('parses "resets Jul 15, 3pm (America/New_York)" onto the right DAY', () => {
+      const r = parseResetTime(
+        "You've hit your weekly limit · resets Jul 15, 3pm (America/New_York)",
+        JAN,
+      );
+      expect(r?.kind).toBe('date');
+      // 15:00 EDT (summer, UTC-4) on Jul 15 == 19:00Z — months away, not today.
+      expect(r?.date.toISOString()).toBe('2026-07-15T19:00:00.000Z');
+      expect(r?.zone).toBe('America/New_York');
+    });
+
+    it('parses a date with minutes and an explicit year', () => {
+      const r = parseResetTime('resets Dec 31, 2026, 11:30pm (UTC)', JAN);
+      expect(r?.date.toISOString()).toBe('2026-12-31T23:30:00.000Z');
+    });
+
+    it('rolls a year-less date that already passed into next year', () => {
+      // "Jan 2" parsed on Jan 15 must mean NEXT January, not 13 days ago.
+      const r = parseResetTime('resets Jan 2, 3am (UTC)', JAN);
+      expect(r?.date.toISOString()).toBe('2027-01-02T03:00:00.000Z');
+    });
+
+    it('defaults to start of day when the phrasing omits the time', () => {
+      const r = parseResetTime('resets Jul 15 (UTC)', JAN);
+      expect(r?.date.toISOString()).toBe('2026-07-15T00:00:00.000Z');
+    });
+
+    it('resolves a date without a zone in local time', () => {
+      const r = parseResetTime('resets Jul 15, 3pm', JAN);
+      expect(r?.kind).toBe('date');
+      const d = r!.date;
+      expect([d.getMonth(), d.getDate(), d.getHours(), d.getMinutes()]).toEqual([6, 15, 15, 0]);
+    });
+  });
 });

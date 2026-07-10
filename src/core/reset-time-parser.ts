@@ -35,7 +35,7 @@ const GRACE_MS = 120_000;
 export interface ParsedReset {
   date: Date;
   /** How the time was derived; useful for logging/telemetry. */
-  kind: 'iso' | 'relative' | 'clock';
+  kind: 'iso' | 'relative' | 'clock' | 'date';
   /** Resolved IANA zone, or 'local' when no zone was given. */
   zone: string;
 }
@@ -50,25 +50,86 @@ export function parseResetTime(text: string, now: number = Date.now()): ParsedRe
     if (!Number.isNaN(d.getTime())) return { date: d, kind: 'iso', zone: 'UTC' };
   }
 
-  // 2) Relative: "in 2 hours", "in 30 minutes".
-  const rel = text.match(/in\s+(\d+)\s*(hours?|hrs?|minutes?|mins?)/i);
-  if (rel) {
-    const n = parseInt(rel[1]!, 10);
-    const ms = /min/i.test(rel[2]!) ? n * 60_000 : n * 3_600_000;
-    return { date: new Date(now + ms), kind: 'relative', zone: 'local' };
+  // 2) Relative: "in 2 hours", "in 30 minutes" — and the CLI's compact duration
+  //    form "in 2h 13m" / "in 3d 2h" / "in 45m" (fast-limit banners render
+  //    "resets in <duration>" with d/h/m/s units and no full unit words).
+  const relMs = matchRelativeDuration(text);
+  if (relMs !== null) {
+    return { date: new Date(now + relMs), kind: 'relative', zone: 'local' };
   }
 
-  // 3) Clock time, optionally with a timezone. Prefer the time stated after a
-  //    reset phrase ("reset at 9am") so a leading log timestamp can't hijack it.
+  // 3) A time anchored to a reset phrase ("reset at 9am", "resets Jul 15, 3pm")
+  //    is preferred so a leading log timestamp can't hijack it.
   const scoped = scopeAfterResetPhrase(text);
-  const time = matchClockTime(scoped.text, scoped.anchored);
-  if (!time) return null;
 
+  //    Explicit date ("Jul 15", "Dec 31, 2026") — the CLI's phrasing for any
+  //    reset more than 24h away (weekly caps): "resets Jul 15, 3pm (zone)".
+  //    Without this, the clock time alone would schedule within 24h and resume
+  //    DAYS too early, burning every retry long before the true reset.
+  const date = matchExplicitDate(scoped.text);
+  const time = matchClockTime(scoped.text, scoped.anchored);
   const zone = resolveZone(scoped.text);
+
+  if (date) {
+    // Time defaults to start-of-day if the phrasing omitted it.
+    const { hour, minute } = time ?? { hour: 0, minute: 0 };
+    const d =
+      zone === 'local'
+        ? onLocalDate(now, date.month, date.day, date.year, hour, minute)
+        : onZonedDate(now, date.month, date.day, date.year, hour, minute, zone);
+    return { date: d, kind: 'date', zone };
+  }
+
+  if (!time) return null;
   if (zone === 'local') {
     return { date: nextLocal(now, time.hour, time.minute), kind: 'clock', zone: 'local' };
   }
   return { date: nextZoned(now, time.hour, time.minute, zone), kind: 'clock', zone };
+}
+
+/**
+ * "in 2 hours", "in 30 minutes", and compact "in 3d 2h", "in 2h 13m", "in 45m",
+ * "in 90s". Returns total milliseconds, or null when no relative phrase found.
+ */
+function matchRelativeDuration(text: string): number | null {
+  const m = text.match(
+    /\bin\s+((?:\d+\s*(?:d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)\s*)+)/i,
+  );
+  if (!m) return null;
+  let ms = 0;
+  const part = /(\d+)\s*(d(?:ays?)?|h(?:ours?|rs?)?|m(?:in(?:ute)?s?)?|s(?:ec(?:ond)?s?)?)/gi;
+  let p: RegExpExecArray | null;
+  while ((p = part.exec(m[1]!)) !== null) {
+    const n = parseInt(p[1]!, 10);
+    const unit = p[2]![0]!.toLowerCase();
+    ms +=
+      unit === 'd' ? n * 86_400_000 : unit === 'h' ? n * 3_600_000 : unit === 'm' ? n * 60_000 : n * 1_000;
+  }
+  return ms > 0 ? ms : null;
+}
+
+const MONTHS: Record<string, number> = {
+  jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6,
+  jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12,
+};
+
+interface ExplicitDate {
+  month: number;
+  day: number;
+  /** Absent when the phrasing omitted the year (same-year reset). */
+  year?: number;
+}
+
+/** "Jul 15", "July 15", "Jul 15, 2026" — the en-US month-day the CLI prints. */
+function matchExplicitDate(text: string): ExplicitDate | null {
+  const m = text.match(
+    /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s*(\d{4}))?/i,
+  );
+  if (!m) return null;
+  const month = MONTHS[m[1]!.toLowerCase()]!;
+  const day = parseInt(m[2]!, 10);
+  if (day < 1 || day > 31) return null;
+  return { month, day, year: m[3] ? parseInt(m[3], 10) : undefined };
 }
 
 interface ClockTime {
@@ -242,4 +303,46 @@ function nextLocal(now: number, hour: number, minute: number): Date {
   d.setHours(hour, minute, 0, 0);
   if (d.getTime() <= now - GRACE_MS) d.setDate(d.getDate() + 1);
   return d;
+}
+
+/** How far in the past a year-less explicit date may land before we assume it
+ * meant NEXT year (announced resets are in the future; half a day covers any
+ * zone/clock skew without misreading "yesterday" as 12 months away). */
+const DATE_PAST_TOLERANCE_MS = 12 * 3_600_000;
+
+/** Resolve "Jul 15[, 2026], 3pm" in local time. */
+function onLocalDate(
+  now: number,
+  month: number,
+  day: number,
+  year: number | undefined,
+  hour: number,
+  minute: number,
+): Date {
+  const base = new Date(now);
+  const y = year ?? base.getFullYear();
+  const d = new Date(y, month - 1, day, hour, minute, 0, 0);
+  if (year === undefined && d.getTime() < now - DATE_PAST_TOLERANCE_MS) {
+    return new Date(y + 1, month - 1, day, hour, minute, 0, 0);
+  }
+  return d;
+}
+
+/** Resolve "Jul 15[, 2026], 3pm" as a wall time in `tz`. */
+function onZonedDate(
+  now: number,
+  month: number,
+  day: number,
+  year: number | undefined,
+  hour: number,
+  minute: number,
+  tz: string,
+): Date {
+  const today = zonedParts(tz, now);
+  const y = year ?? today.year;
+  const inst = resolveWall(tz, y, month, day, hour, minute);
+  if (year === undefined && inst < now - DATE_PAST_TOLERANCE_MS) {
+    return new Date(resolveWall(tz, y + 1, month, day, hour, minute));
+  }
+  return new Date(inst);
 }

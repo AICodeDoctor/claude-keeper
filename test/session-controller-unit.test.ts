@@ -605,4 +605,68 @@ describe('SessionController unit (fake PTY)', () => {
       expect(h.ptys[0].written).toEqual([]);
     });
   });
+
+  describe('still-limited resume with a fresh reset time', () => {
+    /** Records scheduler calls; fires `resume` only when the test asks. */
+    class RecordingScheduler implements IResumeScheduler {
+      readonly startTimes: Array<Date | null> = [];
+      retries = 0;
+      private readonly listeners = new Set<(e: SchedulerEvent) => void>();
+      on(l: (e: SchedulerEvent) => void): () => void {
+        this.listeners.add(l);
+        return () => this.listeners.delete(l);
+      }
+      start(resetTime: Date | null): void {
+        this.startTimes.push(resetTime);
+      }
+      retry(): void {
+        this.retries++;
+      }
+      stop(): void {}
+      fireResume(attempt = 1): void {
+        for (const l of this.listeners) l({ type: 'resume', attempt, targetMs: 0 });
+      }
+    }
+
+    function resumeIntoLimit(banner: string): {
+      scheduler: RecordingScheduler;
+      h: Harness;
+    } {
+      const scheduler = new RecordingScheduler();
+      const h = track(harness({ scheduler }));
+      h.controller.start();
+      h.ptys[0].emitData(LIMIT_LINE); // -> WAITING, scheduler.start #1
+      scheduler.fireResume(); // -> RESUMING, "continue" typed
+      h.ptys[0].emitData(banner); // still limited
+      return { scheduler, h };
+    }
+
+    it('re-arms the schedule when the announced reset is clearly later (weekly cap)', () => {
+      const farIso = new Date(Date.now() + 48 * 3_600_000).toISOString();
+      const { scheduler, h } = resumeIntoLimit(`Weekly limit reached. Resets at ${farIso}\r\n`);
+
+      expect(h.controller.state).toBe('WAITING');
+      expect(scheduler.retries).toBe(0); // NOT burned as a backoff retry
+      expect(scheduler.startTimes).toHaveLength(2);
+      expect(scheduler.startTimes[1]?.toISOString()).toBe(farIso);
+      // The UI learned the corrected wait via a second limit event.
+      const limits = h.events.filter((e) => e.type === 'limit');
+      expect(limits).toHaveLength(2);
+    });
+
+    it('keeps plain backoff when the announced reset is near/just passed', () => {
+      const nearIso = new Date(Date.now() + 30_000).toISOString();
+      const { scheduler, h } = resumeIntoLimit(`Usage limit reached. Resets at ${nearIso}\r\n`);
+
+      expect(h.controller.state).toBe('WAITING');
+      expect(scheduler.retries).toBe(1);
+      expect(scheduler.startTimes).toHaveLength(1); // no re-arm
+    });
+
+    it('keeps plain backoff when the still-limited reply names no time', () => {
+      const { scheduler } = resumeIntoLimit('Usage limit reached. Please try again later.\r\n');
+      expect(scheduler.retries).toBe(1);
+      expect(scheduler.startTimes).toHaveLength(1);
+    });
+  });
 });

@@ -185,6 +185,9 @@ describe('SessionController integration (fake-claude over a real PTY)', () => {
       env: {
         ...(process.env as Record<string, string>),
         FAKE_CLAUDE_STILL_LIMITED: '1', // first "continue" is answered with the limit again
+        // No parseable reset time: the still-limited reply must take the plain
+        // retry/backoff path (a concrete far-future time would re-arm instead).
+        FAKE_CLAUDE_RESET: 'soon',
       },
     });
     const rec = record(c);
@@ -315,6 +318,7 @@ describe('SessionController integration (fake-claude over a real PTY)', () => {
       env: {
         ...(process.env as Record<string, string>),
         FAKE_CLAUDE_STILL_LIMITED: '99', // every "continue" stays limited
+        FAKE_CLAUDE_RESET: 'soon', // no parseable time -> exhaustion, not re-arm
       },
     });
     const rec = record(c);
