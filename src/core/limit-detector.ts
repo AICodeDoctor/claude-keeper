@@ -19,7 +19,12 @@ export interface LimitDetectorOptions {
   maxBuffer?: number;
 }
 
-export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
+/**
+ * Patterns that name the limit explicitly ("hit/reached your … limit", "…limit
+ * reached"). A line matching one of these is trusted on its own, even when no
+ * reset time can be parsed from it.
+ */
+export const STRONG_LIMIT_PATTERNS: RegExp[] = [
   // "Claude usage limit reached.", "Weekly usage limit reached." — qualifier (if
   // any) sits before "usage limit", so this already covers the weekly variant.
   /usage limit reached/i,
@@ -40,6 +45,21 @@ export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
   // "Weekly limit reached", "5-hour limit reached", "Daily/Hourly/Monthly/Session
   // limit reached" — the bare phrasing that omits the word "usage".
   /\b(?:weekly|daily|hourly|monthly|session|\d+\s*-?\s*hour)\s+limit reached/i,
+];
+
+/**
+ * Patterns that key on reset-time vocabulary rather than an explicit
+ * reached-limit phrase. They exist to catch phrasings the strong patterns
+ * don't know yet — but that breadth makes them false-positive magnets when
+ * limit-adjacent text merely APPEARS in the terminal (source files, diffs,
+ * commit logs, prose about limits… this very repo's own code). So a match is
+ * only trusted when a concrete reset time parses out of the matched line: the
+ * real CLI banner always carries one ("· resets <time>"), while incidental
+ * text usually doesn't. A weak match with no time is dropped — without this,
+ * it would start a blind interval-poll wait (the "false alert with a 5-minute
+ * timer" failure).
+ */
+export const WEAK_LIMIT_PATTERNS: RegExp[] = [
   // "Session limit · resets 11:30am", "Weekly limit · resets …" — the newest
   // phrasing pairs the limit noun with "resets" instead of "reached", and may
   // arrive without any "hit"/"reached" verb to anchor on.
@@ -62,8 +82,51 @@ export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
   /\breset[^.!?\n]*(?:[.!?]+[^\S\n]*)?[^.!?\n]*?\blimit\b/i,
 ];
 
+export const DEFAULT_LIMIT_PATTERNS: RegExp[] = [
+  ...STRONG_LIMIT_PATTERNS,
+  ...WEAK_LIMIT_PATTERNS,
+];
+
+/** Weak patterns recognized by source so the split survives setPatterns()
+ * round-trips (custom user patterns are never in this set => always strong). */
+const WEAK_PATTERN_SOURCES = new Set(WEAK_LIMIT_PATTERNS.map((p) => p.source));
+
 /** Absolute ceiling so a pinned, never-terminated candidate line can't grow forever. */
 const HARD_BUFFER_MULTIPLIER = 8;
+
+/**
+ * A line that is clearly CONTENT BEING DISPLAYED in the terminal — a file dump,
+ * grep/diff output, a comment, a quoted string — rather than the CLI speaking
+ * for itself. Working on limit-related code (this very repo) paints hundreds of
+ * such lines, many containing verbatim banner text (test fixtures, pattern
+ * comments), and each would otherwise register as a real limit. The genuine
+ * banner is never rendered behind any of these prefixes.
+ */
+const DISPLAYED_CONTENT_PATTERNS: RegExp[] = [
+  // "  46\t…" / "46→…" — cat -n / file-viewer line-number gutters.
+  /^\s*\d{1,6}\s*[\t→]/,
+  // "path/file.ts:48:…" or ":48-…" — grep -n output. The pre-colon token must
+  // contain a letter so a bare clock time ("11:30:00 …") is not mistaken for it.
+  /^\s*[^:\s]*[A-Za-z][^:\s]*:\d{1,6}[-:]/,
+  // Source comments and markdown headings: "// …", "/* …", " * …", "# …".
+  /^\s*(?:\/\/|\/\*|\*\s|#\s)/,
+  // Diff bodies ("+ added", "- removed", "+++/---" file headers) and list bullets.
+  /^\s*[-+]\s|^\s*[-+]{3,}(?:\s|$)/,
+  // Blockquotes / echoed prompts (">"), tool-output gutters ("⎿"), ASCII table
+  // rows ("|"). NOT the box-drawing "│": the CLI renders its real banner inside
+  // a │-bordered panel, so that glyph legitimately prefixes a genuine limit.
+  /^\s*[>⎿|]/,
+  // A line that OPENS with a quote is a string literal being shown (fixtures,
+  // code) — the CLI never quotes its own banner.
+  /^\s*['"`]/,
+  // Regex-source fragments: "\b", "\d", "\s"… appear when pattern definitions
+  // (like this file's) are displayed, never in a rendered banner.
+  /\\[bBdDsSwW]/,
+];
+
+function isDisplayedContentLine(line: string): boolean {
+  return DISPLAYED_CONTENT_PATTERNS.some((p) => p.test(line));
+}
 
 /**
  * A phrase that says the limit HAS been hit ("hit/reached your … limit",
@@ -174,9 +237,9 @@ export class LimitDetector {
         .slice(lineStart, nl < 0 ? this.buf.length : nl)
         .replace(/\r$/, '')
         .trim();
-      if (isPreLimitUsageWarning(line)) {
-        if (nl < 0) return false; // trailing line is a warning: nothing genuine pending
-        search = nl + 1; // skip this terminated warning and look further on
+      if (this.isDiscardedMatch(line)) {
+        if (nl < 0) return false; // trailing line would be discarded: nothing pending
+        search = nl + 1; // skip this terminated non-event and look further on
         continue;
       }
       return nl < 0; // genuine match: pending iff not yet newline-terminated
@@ -218,13 +281,29 @@ export class LimitDetector {
       const line = this.buf.slice(lineStart, lineEnd).replace(/\r$/, '').trim();
       this.buf = lineEnd < this.buf.length ? this.buf.slice(lineEnd + 1) : '';
 
-      // A sub-100% usage warning ("used 71% of your limit") is not a limit that
-      // has been reached: consume it and keep scanning for a genuine limit line.
-      if (isPreLimitUsageWarning(line)) continue;
+      // Not a limit actually being announced (usage warning, displayed content,
+      // weak match without a time): consume it and keep scanning.
+      if (this.isDiscardedMatch(line)) continue;
 
       const reset = parseResetTime(line, this.now());
       return { matchedText: line, resetTime: reset?.date ?? null, reset };
     }
+  }
+
+  /**
+   * True when a pattern-matching line must NOT register as a limit:
+   *  - a sub-100% usage warning ("used 71% of your limit"),
+   *  - displayed content (file dumps, grep/diff output, comments, quotes),
+   *  - a weak (reset-vocabulary) match with no parseable reset time — the real
+   *    banner always names one; incidental limit-adjacent prose usually doesn't.
+   */
+  private isDiscardedMatch(line: string): boolean {
+    if (isPreLimitUsageWarning(line)) return true;
+    if (isDisplayedContentLine(line)) return true;
+    const strong = this.patterns.some(
+      (p) => !WEAK_PATTERN_SOURCES.has(p.source) && p.test(line),
+    );
+    return !strong && parseResetTime(line, this.now()) === null;
   }
 
   /** Bound memory — but never discard an unterminated line that holds a match. */

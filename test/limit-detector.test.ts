@@ -418,27 +418,47 @@ describe('LimitDetector', () => {
   });
 
   describe('"limit" + "reset" co-occurrence (encoding-robust catch-all)', () => {
-    // The first three phrasings are chosen so NONE of the more specific patterns
-    // above match (no "usage/weekly/session limit", no "reached/hit … limit", no
-    // "reset at/by <time>"). Detection therefore comes solely from the new
-    // co-occurrence patterns — proving they add coverage.
-    it('matches both words in the same sentence', () => {
+    // These phrasings are chosen so NONE of the more specific patterns above
+    // match (no "usage/weekly/session limit", no "reached/hit … limit").
+    // Detection therefore comes solely from the co-occurrence patterns — and
+    // because those are WEAK, they only register when a concrete reset time
+    // parses out of the line (the real banner always carries one).
+    it('matches both words in the same sentence when a reset time is present', () => {
       const d = new LimitDetector({ now });
-      const ev = d.push('Your plan limit will reset shortly.\n');
+      const ev = d.push('Your plan limit will reset at 9:00 AM (UTC).\n');
       expect(ev).not.toBeNull();
       expect(ev!.matchedText).toContain('plan limit will reset');
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T09:00:00.000Z');
     });
 
-    it('matches the two words split across two consecutive sentences', () => {
+    it('matches the two words split across two consecutive sentences (with a time)', () => {
       const d = new LimitDetector({ now });
-      const ev = d.push('Your account limit is active now. It will reset overnight.\n');
+      const ev = d.push('Your account limit is active now. It will reset by 9:00 PM (UTC).\n');
       expect(ev).not.toBeNull();
     });
 
-    it('matches the reverse order (reset … limit)', () => {
+    it('matches the reverse order (reset … limit) when a time is present', () => {
       const d = new LimitDetector({ now });
-      const ev = d.push('We reset the counter once your plan limit lifts.\n');
+      const ev = d.push('Usage will reset at 3:00 PM (UTC) for your plan limit.\n');
       expect(ev).not.toBeNull();
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T15:00:00.000Z');
+    });
+
+    it('does NOT match limit+reset prose that names no concrete time', () => {
+      const d = new LimitDetector({ now });
+      // Exactly the false-positive shape that used to start a blind 5-minute
+      // poll loop: limit-adjacent prose (commit messages, explanations) with
+      // no reset time on the line.
+      expect(d.push('Your plan limit will reset shortly.\n')).toBeNull();
+      expect(d.push('Your account limit is active now. It will reset overnight.\n')).toBeNull();
+      expect(d.push('We reset the counter once your plan limit lifts.\n')).toBeNull();
+    });
+
+    it('an explicit reached-limit phrase still fires WITHOUT a time (strong)', () => {
+      const d = new LimitDetector({ now });
+      const ev = d.push("You've hit your session limit\n");
+      expect(ev).not.toBeNull();
+      expect(ev!.resetTime).toBeNull();
     });
 
     it('tolerates a curly apostrophe and wording the specific patterns miss', () => {
@@ -464,6 +484,66 @@ describe('LimitDetector', () => {
       const d = new LimitDetector({ now });
       expect(d.push('Please reset your password to continue.\n')).toBeNull();
       expect(d.push('There is no rate limit on this endpoint.\n')).toBeNull();
+    });
+  });
+
+  describe('displayed content is never a limit (self-trigger hardening)', () => {
+    // Working ON limit-handling code inside a watched session paints verbatim
+    // banner text into the terminal constantly: file dumps with line-number
+    // gutters, grep output, comments, quoted fixtures, diffs. None of these are
+    // the CLI announcing a limit, even when the text is a perfect banner.
+    it('ignores a verbatim banner behind a cat -n line-number gutter', () => {
+      const d = new LimitDetector({ now });
+      expect(
+        d.push("   46\t// \"You've hit your session limit · resets 11:30am\"\n"),
+      ).toBeNull();
+      expect(d.push("289\tYou've hit your session limit · resets 11:30am (UTC)\n")).toBeNull();
+    });
+
+    it('ignores a banner inside grep -n path:line: output', () => {
+      const d = new LimitDetector({ now });
+      expect(
+        d.push("src/core/detector.ts:46: usage limit reached, resets at 9:00 AM (UTC)\n"),
+      ).toBeNull();
+    });
+
+    it('ignores source comments and quoted string literals', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push('  // Weekly limit reached — resets at 9am\n')).toBeNull();
+      expect(d.push('   * "5-hour limit reached. reset at 1:00 PM"\n')).toBeNull();
+      expect(d.push("  'You've hit your session limit · resets 3pm',\n")).toBeNull();
+    });
+
+    it('ignores diff lines and blockquoted/gutter-prefixed text', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push("+ out(`You've hit your session limit · resets 3pm`)\n")).toBeNull();
+      expect(d.push('> usage limit reached. resets at 9:00 AM (UTC)\n')).toBeNull();
+      expect(d.push('⎿ Weekly limit reached. Resets at 10:00 AM (UTC)\n')).toBeNull();
+    });
+
+    it('ignores regex-source fragments containing escape classes', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push('const re = /\\bsession limit\\b.*resets at 9am/i\n')).toBeNull();
+    });
+
+    it('does not arm a pending match for unterminated displayed content', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push("   46\tYou've hit your session limit · resets 11:30am (UTC)")).toBeNull();
+      expect(d.hasPendingMatch()).toBe(false);
+      expect(d.flush()).toBeNull();
+    });
+
+    it('still detects a REAL banner arriving after displayed content', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push('  // Weekly limit reached — resets at 9am\n')).toBeNull();
+      const ev = d.push("You've hit your session limit · resets 11:30am (UTC)\n");
+      expect(ev).not.toBeNull();
+      expect(ev!.resetTime?.toISOString()).toBe('2026-01-15T11:30:00.000Z');
+    });
+
+    it('the menu option line "Stop and wait for limit to reset" is not itself a limit', () => {
+      const d = new LimitDetector({ now });
+      expect(d.push('  2. Stop and wait for limit to reset\n')).toBeNull();
     });
   });
 });
