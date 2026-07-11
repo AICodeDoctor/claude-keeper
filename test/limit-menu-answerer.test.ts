@@ -136,6 +136,54 @@ describe('LimitMenuAnswerer', () => {
     expect(b.bannerLine()).toBeNull();
   });
 
+  describe('displayed menu text is not a menu (self-trigger hardening)', () => {
+    // Working on THIS codebase inside a watched session paints the stop-option
+    // phrase into the terminal constantly. The worst case actually happened: a
+    // dumped fixture line carrying "2. Stop and wait…" made step() press "2",
+    // typing stray digits into the user's live session.
+    it('ignores a file dump with a line-number gutter', () => {
+      const a = new LimitMenuAnswerer();
+      a.push("   61\t    out('  2. Stop and wait for limit to reset');\r\n");
+      expect(a.visible()).toBe(false);
+      expect(a.step()).toBeNull();
+    });
+
+    it('ignores a raw cat of fixture code (no gutter, but code shapes)', () => {
+      const a = new LimitMenuAnswerer();
+      a.push("    out('  2. Stop and wait for limit to reset');\r\n");
+      expect(a.visible()).toBe(false);
+      expect(a.step()).toBeNull();
+    });
+
+    it('ignores prose quoting the option label', () => {
+      const a = new LimitMenuAnswerer();
+      a.push('The safe choice is "2. Stop and wait for limit to reset".\r\n');
+      expect(a.visible()).toBe(false);
+      expect(a.step()).toBeNull();
+    });
+
+    it('ignores grep output containing the option', () => {
+      const a = new LimitMenuAnswerer();
+      a.push('src/core/answerer.ts:30: stop and wait for limit to reset\r\n');
+      expect(a.visible()).toBe(false);
+    });
+
+    it('bannerLine() ignores quoted/dumped banner text', () => {
+      const a = new LimitMenuAnswerer();
+      a.push("  57\tout(`You've hit your session limit · resets 3pm`);\r\n");
+      a.push('❯ 2. Stop and wait for limit to reset\r\n');
+      expect(a.bannerLine()).toBeNull();
+    });
+
+    it('still answers a REAL menu arriving after displayed menu text', () => {
+      const a = new LimitMenuAnswerer();
+      a.push("   61\t    out('  2. Stop and wait for limit to reset');\r\n");
+      a.push('\r\n' + MENU_NUMBERED);
+      expect(a.visible()).toBe(true);
+      expect(a.step()).toMatchObject({ kind: 'digit', keys: '2' });
+    });
+  });
+
   it('reset() forgets the menu; resetCycle() restores the budget only', () => {
     const a = new LimitMenuAnswerer({ maxRounds: 1 });
     a.push(MENU_NUMBERED);

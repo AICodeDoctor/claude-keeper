@@ -1,3 +1,4 @@
+import { isDisplayedContentLine } from './limit-detector';
 import { TuiStreamNormalizer } from './tui-text';
 
 /**
@@ -79,9 +80,12 @@ export class LimitMenuAnswerer {
     if (text) this.tail = (this.tail + text).slice(-this.tailCap);
   }
 
-  /** Whether the stop-and-wait menu is (still) present in recent output. */
+  /** Whether the stop-and-wait menu is (still) present in recent output.
+   * True only for a structurally genuine menu (see {@link latestBlock}), so
+   * displayed text that merely CONTAINS the stop-option phrase — source dumps,
+   * test fixtures, prose about the menu — can never register as one. */
   visible(): boolean {
-    return STOP_AND_WAIT_RE.test(this.tail);
+    return this.latestBlock() !== null;
   }
 
   /**
@@ -95,6 +99,7 @@ export class LimitMenuAnswerer {
     for (let i = lines.length - 1; i >= 0; i--) {
       const line = lines[i]!.trim();
       if (!line || STOP_AND_WAIT_RE.test(line)) continue;
+      if (isDisplayedContentLine(line)) continue; // quoted/dumped banner text
       if (/\b(?:hit|reached)\s+(?:your|the)\b[^\n]*\blimit\b/i.test(line)) return line;
     }
     return null;
@@ -174,25 +179,41 @@ export class LimitMenuAnswerer {
    * lines around the last occurrence of the stop option. Repaints are
    * separated by the blank lines the erase sequences became, so this block is
    * the menu as currently shown.
+   *
+   * Only a structurally GENUINE menu qualifies. The stop-option phrase also
+   * shows up as displayed content whenever limit-handling code is worked on in
+   * a watched session (this file's own source, test fixtures, docs) — and a
+   * dumped fixture line even carries a real-looking "2." number that step()
+   * would happily press, typing stray digits into the user's session. So a
+   * candidate is rejected when (a) its line looks like displayed content
+   * (line-number gutter, grep path, quote, comment, diff marker), or (b) the
+   * block has no menu structure at all — a real menu renders a selection
+   *  pointer and/or numbered options; prose mentioning the option has neither.
    */
   private latestBlock(): { block: string[]; stopRel: number; sig: string } | null {
     const lines = this.tail.split('\n');
-    let stopIdx = -1;
-    for (let i = lines.length - 1; i >= 0; i--) {
-      if (STOP_AND_WAIT_RE.test(lines[i]!)) {
-        stopIdx = i;
-        break;
-      }
-    }
-    if (stopIdx < 0) return null;
-
+    const body = (s: string): string => s.replace(LINE_PREFIX_RE, '');
     const isBlockLine = (s: string): boolean => s.trim() !== '' && !BORDER_ONLY_RE.test(s);
-    let lo = stopIdx;
-    let hi = stopIdx;
-    while (lo - 1 >= 0 && isBlockLine(lines[lo - 1]!)) lo--;
-    while (hi + 1 < lines.length && isBlockLine(lines[hi + 1]!)) hi++;
-    const block = lines.slice(lo, hi + 1);
-    return { block, stopRel: stopIdx - lo, sig: block.join('\n') };
+
+    for (let stopIdx = lines.length - 1; stopIdx >= 0; stopIdx--) {
+      if (!STOP_AND_WAIT_RE.test(lines[stopIdx]!)) continue;
+      if (isDisplayedContentLine(lines[stopIdx]!.trim())) continue;
+
+      let lo = stopIdx;
+      let hi = stopIdx;
+      while (lo - 1 >= 0 && isBlockLine(lines[lo - 1]!)) lo--;
+      while (hi + 1 < lines.length && isBlockLine(lines[hi + 1]!)) hi++;
+      const block = lines.slice(lo, hi + 1);
+
+      const stopLine = lines[stopIdx]!;
+      const labelAt = stopLine.search(STOP_AND_WAIT_RE);
+      const numbered = /(\d{1,2})[.)]\s*$/.test(stopLine.slice(0, labelAt));
+      const hasPointer = block.some((l) => POINTER_RE.test(body(l)));
+      if (!numbered && !hasPointer) continue; // no menu structure: displayed prose
+
+      return { block, stopRel: stopIdx - lo, sig: block.join('\n') };
+    }
+    return null;
   }
 
   /** Forget everything (fresh session / relaunch). */

@@ -122,9 +122,15 @@ const DISPLAYED_CONTENT_PATTERNS: RegExp[] = [
   // Regex-source fragments: "\b", "\d", "\s"… appear when pattern definitions
   // (like this file's) are displayed, never in a rendered banner.
   /\\[bBdDsSwW]/,
+  // A function call opening a string argument — out('…'), push("…") — is code
+  // being displayed (a raw cat of a fixture/test), not the CLI speaking.
+  /\w\(['"`]/,
+  // A line ENDING at a closing quote (plus trailing punctuation) is a string
+  // literal or prose quoting the banner; the CLI never quotes its own banner.
+  /['"`][.,;)\]]*\s*$/,
 ];
 
-function isDisplayedContentLine(line: string): boolean {
+export function isDisplayedContentLine(line: string): boolean {
   return DISPLAYED_CONTENT_PATTERNS.some((p) => p.test(line));
 }
 
