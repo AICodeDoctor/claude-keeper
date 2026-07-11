@@ -1,0 +1,83 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="760" height="470" viewBox="0 0 760 470" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14">
+<style>
+@keyframes k0{0%{opacity:0}1.75%{opacity:0}2.00%{opacity:1}100%{opacity:1}}
+.k0{opacity:0;animation:k0 15s linear infinite}
+@keyframes k1{0%{opacity:0}5.08%{opacity:0}5.33%{opacity:1}100%{opacity:1}}
+.k1{opacity:0;animation:k1 15s linear infinite}
+@keyframes k2{0%{opacity:0}7.08%{opacity:0}7.33%{opacity:1}100%{opacity:1}}
+.k2{opacity:0;animation:k2 15s linear infinite}
+@keyframes k3{0%{opacity:0}12.42%{opacity:0}12.67%{opacity:1}100%{opacity:1}}
+.k3{opacity:0;animation:k3 15s linear infinite}
+@keyframes k4{0%{opacity:0}15.75%{opacity:0}16.00%{opacity:1}100%{opacity:1}}
+.k4{opacity:0;animation:k4 15s linear infinite}
+@keyframes k5{0%{opacity:0}18.42%{opacity:0}18.67%{opacity:1}100%{opacity:1}}
+.k5{opacity:0;animation:k5 15s linear infinite}
+@keyframes k6{0%{opacity:0}21.75%{opacity:0}22.00%{opacity:1}100%{opacity:1}}
+.k6{opacity:0;animation:k6 15s linear infinite}
+@keyframes k7{0%{opacity:0}26.42%{opacity:0}26.67%{opacity:1}100%{opacity:1}}
+.k7{opacity:0;animation:k7 15s linear infinite}
+@keyframes k8{0%{opacity:0}63.75%{opacity:0}64.00%{opacity:1}100%{opacity:1}}
+.k8{opacity:0;animation:k8 15s linear infinite}
+@keyframes k9{0%{opacity:0}66.42%{opacity:0}66.67%{opacity:1}100%{opacity:1}}
+.k9{opacity:0;animation:k9 15s linear infinite}
+@keyframes k10{0%{opacity:0}69.08%{opacity:0}69.33%{opacity:1}100%{opacity:1}}
+.k10{opacity:0;animation:k10 15s linear infinite}
+@keyframes k11{0%{opacity:0}72.42%{opacity:0}72.67%{opacity:1}100%{opacity:1}}
+.k11{opacity:0;animation:k11 15s linear infinite}
+@keyframes k12{0%{opacity:0}75.75%{opacity:0}76.00%{opacity:1}100%{opacity:1}}
+.k12{opacity:0;animation:k12 15s linear infinite}
+@keyframes k13{0%{opacity:0}7.08%{opacity:0}7.33%{opacity:1}26.67%{opacity:1}26.92%{opacity:0}100%{opacity:0}}
+.k13{opacity:0;animation:k13 15s linear infinite}
+@keyframes k14{0%{opacity:0}26.42%{opacity:0}26.67%{opacity:1}32.67%{opacity:1}32.92%{opacity:0}100%{opacity:0}}
+.k14{opacity:0;animation:k14 15s linear infinite}
+@keyframes k15{0%{opacity:0}32.42%{opacity:0}32.67%{opacity:1}38.67%{opacity:1}38.92%{opacity:0}100%{opacity:0}}
+.k15{opacity:0;animation:k15 15s linear infinite}
+@keyframes k16{0%{opacity:0}38.42%{opacity:0}38.67%{opacity:1}44.67%{opacity:1}44.92%{opacity:0}100%{opacity:0}}
+.k16{opacity:0;animation:k16 15s linear infinite}
+@keyframes k17{0%{opacity:0}44.42%{opacity:0}44.67%{opacity:1}50.67%{opacity:1}50.92%{opacity:0}100%{opacity:0}}
+.k17{opacity:0;animation:k17 15s linear infinite}
+@keyframes k18{0%{opacity:0}50.42%{opacity:0}50.67%{opacity:1}56.67%{opacity:1}56.92%{opacity:0}100%{opacity:0}}
+.k18{opacity:0;animation:k18 15s linear infinite}
+@keyframes k19{0%{opacity:0}56.42%{opacity:0}56.67%{opacity:1}62.67%{opacity:1}62.92%{opacity:0}100%{opacity:0}}
+.k19{opacity:0;animation:k19 15s linear infinite}
+@keyframes k20{0%{opacity:0}62.42%{opacity:0}62.67%{opacity:1}78.67%{opacity:1}78.92%{opacity:0}100%{opacity:0}}
+.k20{opacity:0;animation:k20 15s linear infinite}
+@keyframes k21{0%{opacity:0}78.42%{opacity:0}78.67%{opacity:1}100%{opacity:1}}
+.k21{opacity:0;animation:k21 15s linear infinite}
+text{white-space:pre}
+</style>
+  <rect width="760" height="470" rx="10" fill="#0d1117"/>
+  <rect width="760" height="36" rx="10" fill="#161b22"/>
+  <rect y="26" width="760" height="10" fill="#161b22"/>
+  <line x1="0" y1="36" x2="760" y2="36" stroke="#30363d"/>
+  <circle cx="20" cy="18" r="6" fill="#ff5f56"/>
+  <circle cx="40" cy="18" r="6" fill="#ffbd2e"/>
+  <circle cx="60" cy="18" r="6" fill="#27c93f"/>
+  <text x="380" y="23" fill="#6e7681" text-anchor="middle" font-size="13" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">Claude Keeper — never babysit a usage limit again</text>
+  <line x1="0" y1="436" x2="760" y2="436" stroke="#30363d"/>
+  <rect y="436" width="760" height="34" fill="#161b22"/>
+  <rect x="642" y="443" width="98" height="20" rx="9" fill="none" stroke="#30363d"/>
+  <text x="691" y="458" fill="#6e7681" text-anchor="middle" font-size="12">AUTO-RESUME</text>
+<text x="20" y="62" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k0">$ claude</text>
+<text x="20" y="84" fill="#c9d1d9" font-weight="normal" font-size="14" text-anchor="start" class="k1">Claude Code · Pro</text>
+<text x="20" y="106" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k2">ready</text>
+<text x="20" y="150" fill="#e6edf3" font-weight="normal" font-size="14" text-anchor="start" class="k3">❯ refactor the auth module and add tests</text>
+<text x="20" y="172" fill="#3fb950" font-weight="normal" font-size="14" text-anchor="start" class="k4">● refactor the auth module and add tests</text>
+<text x="20" y="194" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k5">  ↳ editing src/auth/session.ts …</text>
+<text x="20" y="216" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k6">  ↳ running the test suite …</text>
+<text x="20" y="260" fill="#d29922" font-weight="normal" font-size="14" text-anchor="start" class="k7">Claude usage limit reached. Your limit will reset at 3:00 PM (America/New_York).</text>
+<text x="20" y="304" fill="#58a6ff" font-weight="normal" font-size="14" text-anchor="start" class="k8">❯ continue</text>
+<text x="20" y="326" fill="#3fb950" font-weight="normal" font-size="14" text-anchor="start" class="k9">● continue</text>
+<text x="20" y="348" fill="#39c5cf" font-weight="normal" font-size="14" text-anchor="start" class="k10">Resuming previous conversation…</text>
+<text x="20" y="370" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k11">  ↳ auth module refactored ✓</text>
+<text x="20" y="392" fill="#6e7681" font-weight="normal" font-size="14" text-anchor="start" class="k12">  ↳ 12 tests added — all green ✓</text>
+<text x="20" y="458" fill="#3fb950" font-weight="bold" font-size="14" text-anchor="start" class="k13">●  Running — hosting Claude Code</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k14">⏳  Limit reached — resuming in 00:05</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k15">⏳  Limit reached — resuming in 00:04</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k16">⏳  Limit reached — resuming in 00:03</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k17">⏳  Limit reached — resuming in 00:02</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k18">⏳  Limit reached — resuming in 00:01</text>
+<text x="20" y="458" fill="#d29922" font-weight="bold" font-size="14" text-anchor="start" class="k19">⏳  Limit reached — resuming in 00:00</text>
+<text x="20" y="458" fill="#58a6ff" font-weight="bold" font-size="14" text-anchor="start" class="k20">▶  Reset reached — resuming session</text>
+<text x="20" y="458" fill="#3fb950" font-weight="bold" font-size="14" text-anchor="start" class="k21">●  Running — task continued</text>
+</svg>
